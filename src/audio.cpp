@@ -118,6 +118,8 @@ AudioStreamPlayer::~AudioStreamPlayer() {
 }
 
 void AudioStreamPlayer::play(const std::string& url) {
+    stop_requested_.store(false, std::memory_order_relaxed);
+
     cleanup();
     open_stream(url);
     setup_decoder();
@@ -130,12 +132,9 @@ void AudioStreamPlayer::play(const std::string& url) {
         throw_error("Failed to allocate packet/frame.");
     }
 
-    std::cout << "Streaming from: " << url << '\n';
-    std::cout << "Press Ctrl+C to stop.\n";
-
     bool audio_started = false;
 
-    while (true) {
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
         int ret = av_read_frame(format_ctx_, packet_);
 
         if (ret < 0) {
@@ -163,7 +162,7 @@ void AudioStreamPlayer::play(const std::string& url) {
             continue;
         }
 
-        while (true) {
+        while (!stop_requested_.load(std::memory_order_relaxed)) {
             ret = avcodec_receive_frame(codec_ctx_, frame_);
 
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
@@ -185,14 +184,78 @@ void AudioStreamPlayer::play(const std::string& url) {
         }
     }
 
-    flush_decoder();
-    wait_for_playback_finish();
+    if (!stop_requested_.load(std::memory_order_relaxed)) {
+        flush_decoder();
+        wait_for_playback_finish();
+    }
+
+    cleanup();
 }
 
 void AudioStreamPlayer::stop() {
-    audio_device_.clear();
+    stop_requested_.store(true, std::memory_order_relaxed);
     audio_device_.pause();
-    cleanup();
+    audio_device_.clear();
+    // cleanup();
+}
+
+void AudioStreamPlayer::pause_play() {
+    if (paused) {
+        audio_device_.start();
+        paused = false;
+        return;
+    }
+    audio_device_.pause();
+    paused = true;
+}
+
+void AudioStreamPlayer::set_volume(float volume) {
+    volume_ = std::clamp(volume, 0.0f, 2.0f);
+    // force immediate volume change
+    // audio_device_.clear();
+}
+
+void AudioStreamPlayer::increase_volume() {
+    set_volume(volume_ + 0.1f);
+}
+
+void AudioStreamPlayer::decrease_volume() {
+    set_volume(volume_ - 0.1f);
+}
+
+std::pair<int, int> AudioStreamPlayer::total_time() const {
+    if (!format_ctx_ || format_ctx_->duration == AV_NOPTS_VALUE) {
+        return {0, 0};
+    }
+
+    double seconds = static_cast<double>(format_ctx_->duration) / AV_TIME_BASE;
+
+    int mins = static_cast<int>(seconds) / 60;
+    int secs = static_cast<int>(seconds) % 60;
+
+    return {mins, secs};
+}
+
+std::pair<int, int> AudioStreamPlayer::current_time() const {
+    if (!format_ctx_ || audio_stream_index_ < 0 || !frame_) {
+        return {0, 0};
+    }
+
+    AVStream* stream = format_ctx_->streams[audio_stream_index_];
+
+    double seconds = 0.0;
+
+    if (frame_->best_effort_timestamp != AV_NOPTS_VALUE) {
+        seconds =
+            frame_->best_effort_timestamp * av_q2d(stream->time_base);
+    } else {
+        return {0, 0};
+    }
+
+    int mins = static_cast<int>(seconds) / 60;
+    int secs = static_cast<int>(seconds) % 60;
+
+    return {mins, secs};
 }
 
 void AudioStreamPlayer::open_stream(const std::string& url) {
@@ -339,6 +402,13 @@ void AudioStreamPlayer::queue_converted_frame() {
         AV_SAMPLE_FMT_FLT,
         1
     );
+
+    float* samples = reinterpret_cast<float*>(output_data);
+    int sample_count = output_buffer_size / sizeof(float);
+
+    for (int i = 0; i < sample_count; ++i) {
+        samples[i] *= volume_;
+    }
 
     if (output_buffer_size > 0) {
         while (audio_device_.queued_size() > 1024 * 1024) {

@@ -51,8 +51,62 @@ public:
         setup_components();
     }
 
+    ~TUI() {
+        stop_progress_updater();
+    }
+
     void run() {
         screen_.Loop(root_);
+    }
+
+    void set_audio_times(double current_seconds, double total_seconds) {
+        {
+            std::lock_guard<std::mutex> lock(progress_mutex_);
+            current_time_seconds_ = current_seconds;
+            total_time_seconds_ = total_seconds;
+        }
+        screen_.PostEvent(ftxui::Event::Custom);
+    }
+
+    void start_progress_updater() {
+        stop_progress_updater();
+
+        progress_running_ = true;
+        progress_thread_ = std::thread([this]() {
+            using namespace std::chrono_literals;
+
+            while (progress_running_) {
+                try {
+                    auto [current_mins, current_secs] = player_.current_time();
+                    // This doesn't need to be called repeatedly
+                    auto [total_mins, total_secs] = player_.total_time();
+
+                    double current_seconds =
+                        static_cast<double>(current_mins * 60 + current_secs);
+                    double total_seconds =
+                        static_cast<double>(total_mins * 60 + total_secs);
+
+                    {
+                        std::lock_guard<std::mutex> lock(progress_mutex_);
+                        current_time_seconds_ = current_seconds;
+                        total_time_seconds_ = total_seconds;
+                    }
+
+                    screen_.PostEvent(ftxui::Event::Custom);
+                } catch (const std::exception&) {
+                    // Ignore temporary read errors
+                }
+
+                std::this_thread::sleep_for(250ms);
+            }
+        });
+    }
+
+    void stop_progress_updater() {
+        progress_running_ = false;
+        if (progress_thread_.joinable()) {
+            progress_thread_.join();
+        }
     }
 
     void add_item(const SearchMetaData& item) {
@@ -62,6 +116,7 @@ public:
 
     void clear_items() {
         submitted_items_.clear();
+        submitted_items_data_.clear();
         selected_index_ = 0;
     }
 
@@ -70,11 +125,6 @@ public:
     }
 
     void set_audio_duration(double total_seconds) {
-        total_time_seconds_ = std::max(0.0, total_seconds);
-    }
-
-    void set_audio_times(double current_seconds, double total_seconds) {
-        current_time_seconds_ = std::max(0.0, current_seconds);
         total_time_seconds_ = std::max(0.0, total_seconds);
     }
 
@@ -121,6 +171,20 @@ private:
                 switch_panel();
                 return true;
             }
+
+            if (event == ftxui::Event::CtrlP) {
+                player_.pause_play();
+                return true;
+            }
+
+            if (event == ftxui::Event::Character("=")) {
+                player_.increase_volume();
+            }
+
+            if (event == ftxui::Event::Character("-")) {
+                player_.decrease_volume();
+            }
+
             return false;
         });
 
@@ -155,6 +219,7 @@ private:
                         ftxui::text("Tab: switch panels"),
                         ftxui::text("Input panel: Enter submits"),
                         ftxui::text("Items panel: Up/Down select, Enter acts"),
+                        ftxui::text("Play/pause: ctrl+p")
                     })
                 ) | ftxui::xflex;
 
@@ -223,16 +288,31 @@ private:
         std::string selected_url = submitted_items_data_[selected_index_].url;
         std::string stream_url = search::get_stream_url(selected_url);
 
-        std::thread([stream_url]() {
+        start_playback(stream_url);
+        start_progress_updater();
+
+        std::cout << "Selected item action: " << selected_url << std::endl;
+    }
+
+    void start_playback(const std::string& url) {
+        stop_playback();
+
+        playback_thread_ = std::thread([this, url]() {
             try {
-                audio::AudioStreamPlayer player;
-                player.play(stream_url);
+                player_.set_volume(0.5f);
+                player_.play(url);
             } catch (const std::exception& ex) {
                 std::cerr << "Audio error: " << ex.what() << '\n';
             }
-        }).detach();
+        });
+    }
 
-        std::cout << "Selected item action: " << selected_url << std::endl;
+    void stop_playback() {
+        player_.stop();
+
+        if (playback_thread_.joinable()) {
+            playback_thread_.join();
+        }
     }
 
 private:
@@ -243,9 +323,6 @@ private:
     std::vector<SearchMetaData> submitted_items_data_;
     int selected_index_ = 0;
 
-    double current_time_seconds_ = 83.0;
-    double total_time_seconds_ = 225.0;
-
     ActivePanel active_panel_ = ActivePanel::Input;
 
     ftxui::Component input_;
@@ -255,10 +332,22 @@ private:
     ftxui::Component items_with_handler_;
     ftxui::Component container_;
     ftxui::Component root_;
+
+    audio::AudioStreamPlayer player_;
+    std::thread playback_thread_;
+    std::mutex player_mutex_;
+
+    std::mutex progress_mutex_;
+    double current_time_seconds_ = 0.0;
+    double total_time_seconds_ = 0.0;
+
+    std::atomic<bool> progress_running_{false};
+    std::thread progress_thread_;
 };
 
 int main() {
     TUI tui;
+    tui.set_audio_times(0.0, 0.0);
     tui.run();
     return 0;
 }

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <atomic>
 
 #include <SDL2/SDL.h>
 
@@ -62,6 +63,14 @@ public:
 
     void play(const std::string& url);
     void stop();
+    void pause_play();
+
+    void set_volume(float volume);
+    void increase_volume();
+    void decrease_volume();
+
+    std::pair<int, int> total_time() const;
+    std::pair<int, int> current_time() const;
 
 private:
     void open_stream(const std::string& url);
@@ -83,6 +92,12 @@ private:
     AVFrame* frame_ = nullptr;
 
     int audio_stream_index_ = -1;
+
+    float volume_ = 1.0f;
+
+    std::atomic<bool> stop_requested_{false};
+
+    bool paused = false;
 };
 
 } // namespace audio
