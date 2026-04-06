@@ -403,22 +403,37 @@ void AudioStreamPlayer::queue_converted_frame() {
         1
     );
 
-    float* samples = reinterpret_cast<float*>(output_data);
-    int sample_count = output_buffer_size / sizeof(float);
-
-    for (int i = 0; i < sample_count; ++i) {
-        samples[i] *= volume_;
-    }
-
     if (output_buffer_size > 0) {
-        while (audio_device_.queued_size() > 1024 * 1024) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        float* samples = reinterpret_cast<float*>(output_data);
+        int sample_count = output_buffer_size / sizeof(float);
+
+        for (int i = 0; i < sample_count; ++i) {
+            samples[i] *= volume_;
         }
 
-        audio_device_.queue(
-            output_data,
-            static_cast<std::uint32_t>(output_buffer_size)
-        );
+        const int bytes_per_frame =
+            sizeof(float) * audio_device_.spec().channels;
+        const int chunk_samples = 512;
+        const int chunk_size_bytes = chunk_samples * bytes_per_frame;
+
+        int offset = 0;
+
+        while (offset < output_buffer_size) {
+            const int remaining = output_buffer_size - offset;
+            const int current_chunk_size =
+                std::min(chunk_size_bytes, remaining);
+
+            while (audio_device_.queued_size() > 256 * 1024) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+
+            audio_device_.queue(
+                output_data + offset,
+                static_cast<std::uint32_t>(current_chunk_size)
+            );
+
+            offset += current_chunk_size;
+        }
     }
 
     av_freep(&output_data);

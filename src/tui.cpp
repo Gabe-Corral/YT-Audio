@@ -69,6 +69,10 @@ public:
     }
 
     void start_progress_updater() {
+        // reading frame_->best_effort_timestamp from one
+        // thread while playback is decoding on another
+        // may cause progress bar timing issues
+        // smaller queued chunk sizes seems to fix it mostly
         stop_progress_updater();
 
         progress_running_ = true;
@@ -78,7 +82,6 @@ public:
             while (progress_running_) {
                 try {
                     auto [current_mins, current_secs] = player_.current_time();
-                    // This doesn't need to be called repeatedly
                     auto [total_mins, total_secs] = player_.total_time();
 
                     double current_seconds =
@@ -219,7 +222,8 @@ private:
                         ftxui::text("Tab: switch panels"),
                         ftxui::text("Input panel: Enter submits"),
                         ftxui::text("Items panel: Up/Down select, Enter acts"),
-                        ftxui::text("Play/pause: ctrl+p")
+                        ftxui::text("Play/pause: ctrl+p"),
+                        ftxui::text("Volume up/down: =/-")
                     })
                 ) | ftxui::xflex;
 

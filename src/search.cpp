@@ -45,7 +45,7 @@ std::vector<SearchMetaData> get_search_results(const std::string& search_query) 
     std::vector<SearchMetaData> results;
 
     std::string cmd =
-        "yt-dlp \"ytsearch3:" + search_query +
+        "yt-dlp \"ytsearch5:" + search_query +
         "\" --print \"%(title)j|||%(description)j|||%(webpage_url)j\"";
 
     std::string output = exec(cmd);
