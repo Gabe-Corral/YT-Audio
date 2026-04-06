@@ -252,8 +252,14 @@ private:
     void switch_panel() {
         if (active_panel_ == ActivePanel::Input) {
             active_panel_ = ActivePanel::Items;
+
+            if (!submitted_items_.empty()) {
+                container_->SetActiveChild(items_with_handler_);
+            }
+
         } else {
             active_panel_ = ActivePanel::Input;
+            container_->SetActiveChild(input_with_handler_);
         }
     }
 
